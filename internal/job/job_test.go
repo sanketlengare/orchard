@@ -146,3 +146,75 @@ func TestJobCommandReturnsCopy(t *testing.T) {
 		t.Errorf("Command() = %v, want %v", got, want)
 	}
 }
+
+func TestTransitionTo(t *testing.T) {
+	tests := []struct {
+		name       string
+		current    Status
+		next       Status
+		wantStatus Status
+		wantErr    error
+	}{
+		{
+			name:       "pending to running",
+			current:    StatusPending,
+			next:       StatusRunning,
+			wantStatus: StatusRunning,
+			wantErr:    nil,
+		},
+		{
+			name:       "running to succeeded",
+			current:    StatusRunning,
+			next:       StatusSucceeded,
+			wantStatus: StatusSucceeded,
+			wantErr:    nil,
+		},
+		{
+			name:       "running to failed",
+			current:    StatusRunning,
+			next:       StatusFailed,
+			wantStatus: StatusFailed,
+			wantErr:    nil,
+		},
+		{
+			name:       "pending to succeeded",
+			current:    StatusPending,
+			next:       StatusSucceeded,
+			wantStatus: StatusPending,
+			wantErr:    ErrInvalidTransition,
+		},
+		{
+			name:       "succeeded to running",
+			current:    StatusSucceeded,
+			next:       StatusRunning,
+			wantStatus: StatusSucceeded,
+			wantErr:    ErrInvalidTransition,
+		},
+		{
+			name:       "failed to running",
+			current:    StatusFailed,
+			next:       StatusRunning,
+			wantStatus: StatusFailed,
+			wantErr:    ErrInvalidTransition,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			j := &Job{
+				id:      "job1",
+				command: []string{"echo", "hello"},
+				status:  tt.current,
+			}
+
+			err := j.TransitionTo(tt.next)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("TransitionTo() error = %v, want %v", err, tt.wantErr)
+			}
+			if got := j.Status(); got != tt.wantStatus {
+				t.Errorf("Status() = %q, want %q", got, tt.wantStatus)
+			}
+		})
+	}
+}

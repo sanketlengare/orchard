@@ -8,6 +8,7 @@ import (
 
 var ErrIDRequired = errors.New("job: id is required")
 var ErrCommandRequired = errors.New("job: command is required")
+var ErrInvalidTransition = errors.New("job: invalid status transition")
 
 type Job struct {
 	id      string
@@ -42,4 +43,12 @@ func (j *Job) Command() []string {
 
 func (j *Job) Status() Status {
 	return j.status
+}
+
+func (j *Job) TransitionTo(next Status) error {
+	if !j.status.CanTransitionTo(next) {
+		return ErrInvalidTransition
+	}
+	j.status = next
+	return nil
 }
