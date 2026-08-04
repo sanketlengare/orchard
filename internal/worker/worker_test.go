@@ -202,3 +202,315 @@ func TestWorkerCapacityReturnsCopy(t *testing.T) {
 		t.Errorf("AvailableCapacity() = %v, want {CPUCores: 4, MemoryMiB: 8192}", got)
 	}
 }
+
+func TestWorkerReserve(t *testing.T) {
+	tests := []struct {
+		name           string
+		workerCapacity Capacity
+		request        job.ResourceRequest
+		wantErr        error
+	}{
+		{
+			name:           "valid reserve",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			wantErr:        nil,
+		},
+		{
+			name:           "exact fit reserve",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 4, MemoryMiB: 8192},
+			wantErr:        nil,
+		},
+		{
+			name:           "insufficient CPU",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 5, MemoryMiB: 4096},
+			wantErr:        ErrInsufficientCapacity,
+		},
+		{
+			name:           "insufficient memory",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 16384},
+			wantErr:        ErrInsufficientCapacity,
+		},
+		{
+			name:           "invalid request with zero CPU",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 0, MemoryMiB: 4096},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+		{
+			name:           "invalid request with zero memory",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 0},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+		{
+			name:           "both resources insufficient",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 5, MemoryMiB: 8193},
+			wantErr:        ErrInsufficientCapacity,
+		},
+		{
+			name:           "negative CPU",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: -1, MemoryMiB: 1024},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+		{
+			name:           "negative memory",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			request:        job.ResourceRequest{CPUCores: 1, MemoryMiB: -1},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			created, err := New("worker1", tt.workerCapacity)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			before := created.AvailableCapacity()
+			err = created.Reserve(tt.request)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("Reserve() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			if err != nil {
+				if got := created.AvailableCapacity(); got != before {
+					t.Errorf("AvailableCapacity() = %v, want unchanged %v", got, before)
+				}
+				return
+			}
+
+			expectedAvailable := Capacity{
+				CPUCores:  tt.workerCapacity.CPUCores - tt.request.CPUCores,
+				MemoryMiB: tt.workerCapacity.MemoryMiB - tt.request.MemoryMiB,
+			}
+
+			if created.AvailableCapacity() != expectedAvailable {
+				t.Errorf("Available capacity = %v, want %v", created.AvailableCapacity(), expectedAvailable)
+			}
+		})
+	}
+}
+
+func TestWorkerRelease(t *testing.T) {
+	tests := []struct {
+		name           string
+		workerCapacity Capacity
+		reserve        job.ResourceRequest
+		release        job.ResourceRequest
+		wantErr        error
+	}{
+		{
+			name:           "valid release",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: 1, MemoryMiB: 2048},
+			wantErr:        nil,
+		},
+		{
+			name:           "release all reserved",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			wantErr:        nil,
+		},
+		{
+			name:           "release exceeds usage",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: 3, MemoryMiB: 4096},
+			wantErr:        ErrReleaseExceedsUsage,
+		},
+		{
+			name:           "release with zero CPU",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: 0, MemoryMiB: 2048},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+		{
+			name:           "release with zero memory",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: 1, MemoryMiB: 0},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+		{
+			name:           "release exceeds memory usage",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4097},
+			wantErr:        ErrReleaseExceedsUsage,
+		},
+		{
+			name:           "release with negative CPU",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: -1, MemoryMiB: 1024},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+		{
+			name:           "release with negative memory",
+			workerCapacity: Capacity{CPUCores: 4, MemoryMiB: 8192},
+			reserve:        job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096},
+			release:        job.ResourceRequest{CPUCores: 1, MemoryMiB: -1},
+			wantErr:        ErrInvalidResourceRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			created, err := New("worker1", tt.workerCapacity)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			if err := created.Reserve(tt.reserve); err != nil {
+				t.Fatalf("Reserve() setup error = %v", err)
+			}
+
+			before := created.AvailableCapacity()
+			err = created.Release(tt.release)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("Release() error = %v, wantErr %v", err, tt.wantErr)
+			}
+
+			if err != nil {
+				if got := created.AvailableCapacity(); got != before {
+					t.Errorf("AvailableCapacity() = %v, want unchanged %v", got, before)
+				}
+				return
+			}
+
+			expectedAvailable := Capacity{
+				CPUCores:  before.CPUCores + tt.release.CPUCores,
+				MemoryMiB: before.MemoryMiB + tt.release.MemoryMiB,
+			}
+
+			if created.AvailableCapacity() != expectedAvailable {
+				t.Errorf("Available capacity = %v, want %v", created.AvailableCapacity(), expectedAvailable)
+			}
+		})
+	}
+}
+
+func TestWorkerReleaseWithoutReservation(t *testing.T) {
+	w, err := New("worker1", Capacity{CPUCores: 4, MemoryMiB: 8192})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	before := w.AvailableCapacity()
+
+	err = w.Release(job.ResourceRequest{
+		CPUCores:  1,
+		MemoryMiB: 2048,
+	})
+
+	if !errors.Is(err, ErrReleaseExceedsUsage) {
+		t.Errorf("Release() error = %v, want %v", err, ErrReleaseExceedsUsage)
+	}
+
+	if got := w.AvailableCapacity(); got != before {
+		t.Errorf("AvailableCapacity() = %v, want unchanged %v", got, before)
+	}
+}
+
+func TestCanRunUsesAvailableCapacity(t *testing.T) {
+	w, err := New(
+		"worker1",
+		Capacity{
+			CPUCores:  4,
+			MemoryMiB: 8192,
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	request := job.ResourceRequest{
+		CPUCores:  3,
+		MemoryMiB: 5000,
+	}
+
+	reservation := job.ResourceRequest{
+		CPUCores:  2,
+		MemoryMiB: 4096,
+	}
+
+	// Initially: 3/5000 fits within 4/8192.
+	if !w.CanRun(request) {
+		t.Fatal("CanRun() = false before reservation, want true")
+	}
+
+	if err := w.Reserve(reservation); err != nil {
+		t.Fatalf("Reserve() error = %v", err)
+	}
+
+	// After reservation, only 2/4096 remains.
+	if w.CanRun(request) {
+		t.Fatal("CanRun() = true after reservation, want false")
+	}
+
+	if err := w.Release(reservation); err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+
+	// Releasing restores capacity to 4/8192.
+	if !w.CanRun(request) {
+		t.Fatal("CanRun() = false after release, want true")
+	}
+}
+
+func TestWorkerReserveSequentially(t *testing.T) {
+	w, err := New(
+		"worker1",
+		Capacity{
+			CPUCores:  4,
+			MemoryMiB: 8192,
+		},
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	request := job.ResourceRequest{
+		CPUCores:  2,
+		MemoryMiB: 4096,
+	}
+
+	if err := w.Reserve(request); err != nil {
+		t.Fatalf("first Reserve() error = %v", err)
+	}
+
+	if err := w.Reserve(request); err != nil {
+		t.Fatalf("second Reserve() error = %v", err)
+	}
+
+	wantEmpty := Capacity{}
+
+	if got := w.AvailableCapacity(); got != wantEmpty {
+		t.Fatalf("AvailableCapacity() = %v, want %v", got, wantEmpty)
+	}
+
+	before := w.AvailableCapacity()
+
+	err = w.Reserve(request)
+	if !errors.Is(err, ErrInsufficientCapacity) {
+		t.Errorf("third Reserve() error = %v, want %v",
+			err, ErrInsufficientCapacity)
+	}
+
+	if got := w.AvailableCapacity(); got != before {
+		t.Errorf("AvailableCapacity() = %v, want unchanged %v",
+			got, before)
+	}
+}

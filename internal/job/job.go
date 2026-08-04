@@ -9,6 +9,13 @@ import (
 var ErrIDRequired = errors.New("job: id is required")
 var ErrCommandRequired = errors.New("job: command is required")
 var ErrInvalidTransition = errors.New("job: invalid status transition")
+var ErrCPUCoresRequired = errors.New("job: cpu cores must be greater than zero")
+var ErrMemoryMiBRequired = errors.New("job: memory MiB must be greater than zero")
+
+type ResourceRequest struct {
+	CPUCores  int
+	MemoryMiB int
+}
 
 type Job struct {
 	id        string
@@ -66,12 +73,3 @@ func (j *Job) TransitionTo(next Status) error {
 	j.status = next
 	return nil
 }
-
-type ResourceRequest struct {
-	CPUCores  int
-	MemoryMiB int
-}
-
-var ErrCPUCoresRequired = errors.New("job: cpu cores must be greater than zero")
-
-var ErrMemoryMiBRequired = errors.New("job: memory MiB must be greater than zero")
