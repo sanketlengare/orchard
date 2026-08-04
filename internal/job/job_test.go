@@ -7,6 +7,13 @@ import (
 	"testing"
 )
 
+func validResourceRequest() ResourceRequest {
+	return ResourceRequest{
+		CPUCores:  1,
+		MemoryMiB: 128,
+	}
+}
+
 func TestNew(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -84,7 +91,7 @@ func TestNew(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			j, err := New(tt.id, tt.command)
+			j, err := New(tt.id, tt.command, validResourceRequest())
 			if !errors.Is(err, tt.wantErr) {
 				t.Errorf("New() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -116,7 +123,7 @@ func TestNew(t *testing.T) {
 
 func TestNewCopiesCommand(t *testing.T) {
 	originalCommand := []string{"echo", "hello"}
-	j, err := New("job1", originalCommand)
+	j, err := New("job1", originalCommand, validResourceRequest())
 	if err != nil {
 		t.Fatalf("New() error = %v, wantErr %v", err, nil)
 	}
@@ -132,7 +139,7 @@ func TestNewCopiesCommand(t *testing.T) {
 }
 
 func TestJobCommandReturnsCopy(t *testing.T) {
-	j, err := New("job1", []string{"echo", "hello"})
+	j, err := New("job1", []string{"echo", "hello"}, validResourceRequest())
 	if err != nil {
 		t.Fatalf("New() error = %v, wantErr %v", err, nil)
 	}
@@ -216,5 +223,111 @@ func TestTransitionTo(t *testing.T) {
 				t.Errorf("Status() = %q, want %q", got, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestNewValidatesResourceRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		resources ResourceRequest
+		wantErr   error
+	}{
+		{
+			name: "valid resources",
+			resources: ResourceRequest{
+				CPUCores:  1,
+				MemoryMiB: 128,
+			},
+			wantErr: nil,
+		},
+		{
+			name: "large valid resources",
+			resources: ResourceRequest{
+				CPUCores:  16,
+				MemoryMiB: 32768,
+			},
+			wantErr: nil,
+		},
+		{
+			name: "zero CPU cores",
+			resources: ResourceRequest{
+				CPUCores:  0,
+				MemoryMiB: 128,
+			},
+			wantErr: ErrCPUCoresRequired,
+		},
+		{
+			name: "negative CPU cores",
+			resources: ResourceRequest{
+				CPUCores:  -1,
+				MemoryMiB: 128,
+			},
+			wantErr: ErrCPUCoresRequired,
+		},
+		{
+			name: "zero memory",
+			resources: ResourceRequest{
+				CPUCores:  1,
+				MemoryMiB: 0,
+			},
+			wantErr: ErrMemoryMiBRequired,
+		},
+		{
+			name: "negative memory",
+			resources: ResourceRequest{
+				CPUCores:  1,
+				MemoryMiB: -128,
+			},
+			wantErr: ErrMemoryMiBRequired,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			created, err := New(
+				"job1",
+				[]string{"echo", "hello"},
+				tt.resources,
+			)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("New() error = %v, want %v", err, tt.wantErr)
+			}
+
+			if tt.wantErr != nil {
+				if created != nil {
+					t.Errorf("New() job = %v, want nil", created)
+				}
+				return
+			}
+
+			if created == nil {
+				t.Fatal("New() job = nil, want a job")
+			}
+
+			if got := created.Resources(); got != tt.resources {
+				t.Errorf("Resources() = %v, want %v", got, tt.resources)
+			}
+		})
+	}
+}
+
+func TestResourceRequestReturnsCopy(t *testing.T) {
+	j, err := New("job1", []string{"echo", "hello"}, validResourceRequest())
+	if err != nil {
+		t.Fatalf("New() error = %v, wantErr %v", err, nil)
+	}
+
+	resourcesCopy := j.Resources()
+	resourcesCopy.CPUCores = 2
+	resourcesCopy.MemoryMiB = 256
+
+	want := ResourceRequest{
+		CPUCores:  1,
+		MemoryMiB: 128,
+	}
+
+	if got := j.Resources(); got != want {
+		t.Errorf("Resources() = %v, want %v", got, want)
 	}
 }
