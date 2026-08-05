@@ -11,6 +11,9 @@ var ErrInvalidResourceRequest = errors.New("scheduler: invalid resource request"
 var ErrNoSuitableWorker = errors.New("scheduler: no suitable worker")
 var ErrJobRequired = errors.New("scheduler: job is required")
 var ErrJobNotPending = errors.New("scheduler: job must be pending")
+var ErrWorkerRequired = errors.New("scheduler: worker is required")
+var ErrJobNotRunning = errors.New("scheduler: job must be running")
+var ErrInvalidFinalStatus = errors.New("scheduler: final status must be succeeded or failed")
 
 func Select(workers []*worker.Worker, request job.ResourceRequest) (*worker.Worker, error) {
 	if request.CPUCores <= 0 || request.MemoryMiB <= 0 {
@@ -53,4 +56,37 @@ func Assign(workers []*worker.Worker, candidate *job.Job) (*worker.Worker, error
 
 	return selectedWorker, nil
 
+}
+
+func Finish(assignedWorker *worker.Worker, candidate *job.Job, finalStatus job.Status) error {
+	if candidate == nil {
+		return ErrJobRequired
+	}
+
+	if assignedWorker == nil {
+		return ErrWorkerRequired
+	}
+
+	if candidate.Status() != job.StatusRunning {
+		return ErrJobNotRunning
+	}
+
+	if finalStatus != job.StatusFailed && finalStatus != job.StatusSucceeded {
+		return ErrInvalidFinalStatus
+	}
+
+	err := assignedWorker.Release(candidate.Resources())
+
+	if err != nil {
+		return err
+	}
+
+	err = candidate.TransitionTo(finalStatus)
+
+	if err != nil {
+		reserveErr := assignedWorker.Reserve(candidate.Resources())
+		return errors.Join(err, reserveErr)
+	}
+
+	return nil
 }

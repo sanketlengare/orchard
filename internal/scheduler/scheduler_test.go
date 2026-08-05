@@ -385,3 +385,197 @@ func TestAssignUpdatesJobAndWorkerState(t *testing.T) {
 		t.Fatalf("second worker capacity = %+v, want unchanged %+v", available, secondBefore)
 	}
 }
+
+func TestFinish(t *testing.T) {
+	tests := []struct {
+		name           string
+		assignedWorker worker.Worker
+		candidateJob   job.Job
+		finalStatus    job.Status
+		running        bool
+		wantErr        error
+	}{
+		{
+			name:           "assigned job finishes as succeeded",
+			assignedWorker: *mustWorker(t, "worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 8192}),
+			candidateJob:   *mustJob(t, "job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096}),
+			finalStatus:    job.StatusSucceeded,
+			running:        true,
+			wantErr:        nil,
+		},
+		{
+			name:           "assigned job finishes as failed",
+			assignedWorker: *mustWorker(t, "worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 8192}),
+			candidateJob:   *mustJob(t, "job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096}),
+			finalStatus:    job.StatusFailed,
+			running:        true,
+			wantErr:        nil,
+		},
+
+		{
+			name:           "non-running job returns ErrJobNotRunning",
+			assignedWorker: *mustWorker(t, "worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 8192}),
+			candidateJob:   *mustJob(t, "job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096}),
+			finalStatus:    job.StatusFailed,
+			running:        false,
+			wantErr:        ErrJobNotRunning,
+		},
+		{
+			name:           "invalid final status",
+			assignedWorker: *mustWorker(t, "worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 8192}),
+			candidateJob:   *mustJob(t, "job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 4096}),
+			finalStatus:    job.StatusPending,
+			running:        true,
+			wantErr:        ErrInvalidFinalStatus,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			before := tt.assignedWorker.AvailableCapacity()
+
+			if tt.running {
+				transitionErr := tt.candidateJob.TransitionTo(job.StatusRunning)
+
+				if transitionErr != nil {
+					t.Fatalf("TransitionTo() error = %v", transitionErr)
+				}
+			}
+
+			err := tt.assignedWorker.Reserve(tt.candidateJob.Resources())
+
+			if err != nil {
+				t.Fatalf("Reserve() error = %v", err)
+			}
+
+			statusBeforeFinish := tt.candidateJob.Status()
+			capacityBeforeFinish := tt.assignedWorker.AvailableCapacity()
+			err = Finish(&tt.assignedWorker, &tt.candidateJob, tt.finalStatus)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("finish() error = %v, want %v", err, tt.wantErr)
+			}
+
+			if err != nil {
+				if status := tt.candidateJob.Status(); status != statusBeforeFinish {
+					t.Fatalf("job status = %v, want unchanged %v", status, statusBeforeFinish)
+				}
+
+				if capacity := tt.assignedWorker.AvailableCapacity(); capacity != capacityBeforeFinish {
+					t.Fatalf(
+						"available capacity = %+v, want unchanged %+v",
+						capacity,
+						capacityBeforeFinish,
+					)
+				}
+
+				return
+			}
+
+			if tt.candidateJob.Status() != tt.finalStatus {
+				t.Fatalf("job status = %v, want %v", tt.candidateJob.Status(), tt.finalStatus)
+			}
+
+			if tt.assignedWorker.AvailableCapacity() != before {
+				t.Errorf("Available capacity = %v, want %v", tt.assignedWorker.AvailableCapacity(), before)
+			}
+
+		})
+	}
+}
+
+func TestNilJobAndWorker(t *testing.T) {
+	worker := *mustWorker(t, "worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 4096})
+	candidateJob := *mustJob(t, "job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 2048})
+	finalStatus := job.StatusSucceeded
+
+	// nil job
+
+	nilJobErr := Finish(&worker, nil, finalStatus)
+
+	if !errors.Is(nilJobErr, ErrJobRequired) {
+		t.Fatalf("Finish() error = %v, want %v", nilJobErr, ErrJobRequired)
+	}
+
+	// nil worker
+
+	nilWorkerErr := Finish(nil, &candidateJob, finalStatus)
+
+	if !errors.Is(nilWorkerErr, ErrWorkerRequired) {
+		t.Fatalf("Finish() error = %v, want %v", nilWorkerErr, ErrWorkerRequired)
+	}
+}
+
+func TestFinishSameJobTwice(t *testing.T) {
+	worker := *mustWorker(t, "worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 4096})
+	candidateJob := *mustJob(t, "job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 2048})
+	finalStatus := job.StatusSucceeded
+
+	transitionErr := candidateJob.TransitionTo(job.StatusRunning)
+	if transitionErr != nil {
+		t.Fatalf("TransitionTo() error = %v", transitionErr)
+	}
+
+	if err := worker.Reserve(candidateJob.Resources()); err != nil {
+		t.Fatalf("Reserve() error = %v", err)
+	}
+
+	// success on first finish
+
+	err := Finish(&worker, &candidateJob, finalStatus)
+	statusAfterFirst := candidateJob.Status()
+	capacityAfterFirst := worker.AvailableCapacity()
+
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+
+	// fails on second finish
+
+	err = Finish(&worker, &candidateJob, finalStatus)
+
+	if status := candidateJob.Status(); status != statusAfterFirst {
+		t.Fatalf("job status = %v, want unchanged %v", status, statusAfterFirst)
+	}
+
+	if capacity := worker.AvailableCapacity(); capacity != capacityAfterFirst {
+		t.Fatalf(
+			"available capacity = %+v, want unchanged %+v",
+			capacity,
+			capacityAfterFirst,
+		)
+	}
+
+	if !errors.Is(err, ErrJobNotRunning) {
+		t.Fatalf("Finish() error = %v, want %v", err, ErrJobNotRunning)
+	}
+}
+
+func TestNoWorkerReservation(t *testing.T) {
+	assignedWorker := *mustWorker(t, "worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 4096})
+	candidateJob := *mustJob(t, "job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 2048})
+	finalStatus := job.StatusSucceeded
+
+	transitionErr := candidateJob.TransitionTo(job.StatusRunning)
+	if transitionErr != nil {
+		t.Fatalf("TransitionTo() error = %v", transitionErr)
+	}
+
+	err := Finish(&assignedWorker, &candidateJob, finalStatus)
+
+	wantErr := worker.ErrReleaseExceedsUsage
+
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Finish() error = %v, want %v", err, wantErr)
+	}
+
+	if candidateJob.Status() != job.StatusRunning {
+		t.Fatalf(
+			"job status = %v, want %v",
+			candidateJob.Status(),
+			job.StatusRunning,
+		)
+	}
+
+}
