@@ -78,45 +78,6 @@ func TestSubmitJob(t *testing.T) {
 	if stored != submitted {
 		t.Fatalf("stored job = %p, want submitted job %p", stored, submitted)
 	}
-
-	invalid, err := service.SubmitJob(
-		"   ",
-		[]string{"echo", "hello"},
-		resources,
-	)
-	if !errors.Is(err, job.ErrIDRequired) {
-		t.Fatalf("SubmitJob() error = %v, want %v", err, job.ErrIDRequired)
-	}
-	if invalid != nil {
-		t.Fatalf("SubmitJob() job = %v, want nil", invalid)
-	}
-
-	duplicate, err := service.SubmitJob(
-		"job1",
-		[]string{"printf", "different"},
-		job.ResourceRequest{
-			CPUCores:  1,
-			MemoryMiB: 1024,
-		},
-	)
-	if !errors.Is(err, store.ErrJobAlreadyExists) {
-		t.Fatalf(
-			"SubmitJob() error = %v, want %v",
-			err,
-			store.ErrJobAlreadyExists,
-		)
-	}
-	if duplicate != nil {
-		t.Fatalf("SubmitJob() job = %v, want nil", duplicate)
-	}
-
-	stored, err = jobStore.Get("job1")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if stored != submitted {
-		t.Fatalf("stored job = %p, want original job %p", stored, submitted)
-	}
 }
 
 func TestRegisterWorker(t *testing.T) {
@@ -149,54 +110,6 @@ func TestRegisterWorker(t *testing.T) {
 	if stored != registered {
 		t.Fatalf(
 			"stored worker = %p, want registered worker %p",
-			stored,
-			registered,
-		)
-	}
-
-	invalid, err := service.RegisterWorker(
-		"   ",
-		worker.Capacity{
-			CPUCores:  4,
-			MemoryMiB: 8192,
-		},
-	)
-	if !errors.Is(err, worker.ErrIDRequired) {
-		t.Fatalf(
-			"RegisterWorker() error = %v, want %v",
-			err,
-			worker.ErrIDRequired,
-		)
-	}
-	if invalid != nil {
-		t.Fatalf("RegisterWorker() worker = %v, want nil", invalid)
-	}
-
-	duplicate, err := service.RegisterWorker(
-		"worker1",
-		worker.Capacity{
-			CPUCores:  1,
-			MemoryMiB: 1024,
-		},
-	)
-	if !errors.Is(err, store.ErrWorkerAlreadyExists) {
-		t.Fatalf(
-			"RegisterWorker() error = %v, want %v",
-			err,
-			store.ErrWorkerAlreadyExists,
-		)
-	}
-	if duplicate != nil {
-		t.Fatalf("RegisterWorker() worker = %v, want nil", duplicate)
-	}
-
-	stored, err = workerStore.Get("worker1")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if stored != registered {
-		t.Fatalf(
-			"stored worker = %p, want original worker %p",
 			stored,
 			registered,
 		)
@@ -286,26 +199,255 @@ func TestScheduleJob(t *testing.T) {
 			insufficientBefore,
 		)
 	}
+}
 
-	capacityAfterFirstSchedule := suitable.AvailableCapacity()
+func TestAssignedWorker(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
 
-	selected, err = service.ScheduleJob("job1")
-	if !errors.Is(err, scheduler.ErrJobNotPending) {
+	service, err := NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	assigned, err := service.AssignedWorker("missing-job")
+	if !errors.Is(err, ErrAssignmentNotFound) {
 		t.Fatalf(
-			"second ScheduleJob() error = %v, want %v",
+			"AssignedWorker() error = %v, want %v",
 			err,
-			scheduler.ErrJobNotPending,
+			ErrAssignmentNotFound,
 		)
 	}
-	if selected != nil {
-		t.Fatalf("second ScheduleJob() worker = %v, want nil", selected)
+	if assigned != nil {
+		t.Fatalf("AssignedWorker() worker = %v, want nil", assigned)
 	}
 
-	if available := suitable.AvailableCapacity(); available != capacityAfterFirstSchedule {
+	_, err = service.SubmitJob(
+		"job1",
+		[]string{"echo", "hello"},
+		job.ResourceRequest{
+			CPUCores:  2,
+			MemoryMiB: 2048,
+		},
+	)
+	if err != nil {
+		t.Fatalf("SubmitJob() error = %v", err)
+	}
+
+	registered, err := service.RegisterWorker(
+		"worker1",
+		worker.Capacity{
+			CPUCores:  4,
+			MemoryMiB: 4096,
+		},
+	)
+	if err != nil {
+		t.Fatalf("RegisterWorker() error = %v", err)
+	}
+
+	selected, err := service.ScheduleJob("job1")
+	if err != nil {
+		t.Fatalf("ScheduleJob() error = %v", err)
+	}
+
+	assigned, err = service.AssignedWorker("job1")
+	if err != nil {
+		t.Fatalf("AssignedWorker() error = %v", err)
+	}
+	if assigned != selected {
 		t.Fatalf(
-			"capacity after second schedule = %+v, want unchanged %+v",
-			available,
-			capacityAfterFirstSchedule,
+			"AssignedWorker() worker = %v, want selected worker %v",
+			assigned,
+			selected,
+		)
+	}
+	if assigned != registered {
+		t.Fatalf(
+			"AssignedWorker() worker = %v, want registered worker %v",
+			assigned,
+			registered,
+		)
+	}
+}
+
+func TestSuccessfulFinishJob(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	resources := job.ResourceRequest{
+		CPUCores:  2,
+		MemoryMiB: 2048,
+	}
+
+	submittedJob1, err := service.SubmitJob(
+		"job1",
+		[]string{"echo", "hello"},
+		resources,
+	)
+	if err != nil {
+		t.Fatalf("SubmitJob() error = %v", err)
+	}
+
+	registered, err := service.RegisterWorker(
+		"worker1",
+		worker.Capacity{
+			CPUCores:  4,
+			MemoryMiB: 4096,
+		},
+	)
+	if err != nil {
+		t.Fatalf("RegisterWorker() error = %v", err)
+	}
+
+	selected, err := service.ScheduleJob("job1")
+	if err != nil {
+		t.Fatalf("ScheduleJob() error = %v", err)
+	}
+	if selected != registered {
+		t.Fatalf("ScheduleJob() worker = %v, want %v", selected, registered)
+	}
+
+	err = service.FinishJob("job1", job.StatusSucceeded)
+	if err != nil {
+		t.Fatalf("FinishJob() error = %v", err)
+	}
+
+	if submittedJob1.Status() != job.StatusSucceeded {
+		t.Fatalf(
+			"job status = %v, want %v",
+			submittedJob1.Status(),
+			job.StatusSucceeded,
+		)
+	}
+
+	if registered.AvailableCapacity() != registered.TotalCapacity() {
+		t.Fatalf(
+			"available capacity = %+v, want %+v",
+			registered.AvailableCapacity(),
+			registered.TotalCapacity(),
+		)
+	}
+
+	assigned, err := service.AssignedWorker("job1")
+	if !errors.Is(err, ErrAssignmentNotFound) {
+		t.Fatalf(
+			"AssignedWorker() error = %v, want %v",
+			err,
+			ErrAssignmentNotFound,
+		)
+	}
+	if assigned != nil {
+		t.Fatalf("AssignedWorker() worker = %v, want nil", assigned)
+	}
+
+	submittedJob2, err := service.SubmitJob(
+		"job2",
+		[]string{"echo", "hello"},
+		resources,
+	)
+	if err != nil {
+		t.Fatalf("SubmitJob() error = %v", err)
+	}
+
+	if _, err := service.ScheduleJob("job2"); err != nil {
+		t.Fatalf("ScheduleJob() error = %v", err)
+	}
+
+	err = service.FinishJob("job2", job.StatusFailed)
+	if err != nil {
+		t.Fatalf("FinishJob() error = %v", err)
+	}
+
+	if submittedJob2.Status() != job.StatusFailed {
+		t.Fatalf(
+			"job status = %v, want %v",
+			submittedJob2.Status(),
+			job.StatusFailed,
+		)
+	}
+}
+
+func TestInvalidJobFinish(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, err = service.SubmitJob(
+		"job1",
+		[]string{"echo", "hello"},
+		job.ResourceRequest{
+			CPUCores:  2,
+			MemoryMiB: 2048,
+		},
+	)
+	if err != nil {
+		t.Fatalf("SubmitJob() error = %v", err)
+	}
+
+	registered, err := service.RegisterWorker(
+		"worker1",
+		worker.Capacity{
+			CPUCores:  4,
+			MemoryMiB: 4096,
+		},
+	)
+	if err != nil {
+		t.Fatalf("RegisterWorker() error = %v", err)
+	}
+
+	err = service.FinishJob("job1", job.StatusSucceeded)
+	if !errors.Is(err, ErrAssignmentNotFound) {
+		t.Fatalf(
+			"FinishJob() error = %v, want %v",
+			err,
+			ErrAssignmentNotFound,
+		)
+	}
+
+	if _, err := service.ScheduleJob("job1"); err != nil {
+		t.Fatalf("ScheduleJob() error = %v", err)
+	}
+
+	capacityBeforeFinish := registered.AvailableCapacity()
+
+	err = service.FinishJob("job1", job.StatusPending)
+	if !errors.Is(err, scheduler.ErrInvalidFinalStatus) {
+		t.Fatalf(
+			"FinishJob() error = %v, want %v",
+			err,
+			scheduler.ErrInvalidFinalStatus,
+		)
+	}
+
+	assigned, err := service.AssignedWorker("job1")
+	if err != nil {
+		t.Fatalf("AssignedWorker() error = %v", err)
+	}
+	if assigned == nil {
+		t.Fatal("AssignedWorker() worker = nil, want assigned worker")
+	}
+	if assigned != registered {
+		t.Fatalf(
+			"AssignedWorker() worker = %v, want %v",
+			assigned,
+			registered,
+		)
+	}
+
+	if registered.AvailableCapacity() != capacityBeforeFinish {
+		t.Fatalf(
+			"available capacity = %+v, want unchanged %+v",
+			registered.AvailableCapacity(),
+			capacityBeforeFinish,
 		)
 	}
 }

@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"errors"
+	"sync"
 
 	"github.com/sanketlengare/orchard/internal/job"
 	"github.com/sanketlengare/orchard/internal/scheduler"
@@ -21,12 +22,14 @@ type WorkerStore interface {
 }
 
 var ErrJobStoreRequired = errors.New("controlplane: job store is required")
-
 var ErrWorkerStoreRequired = errors.New("controlplane: worker store is required")
+var ErrAssignmentNotFound = errors.New("controlplane: assignment not found")
 
 type Service struct {
+	mu          sync.RWMutex
 	jobStore    JobStore
 	workerStore WorkerStore
+	assignments map[string]string
 }
 
 func NewService(jobStore JobStore, workerStore WorkerStore) (*Service, error) {
@@ -41,6 +44,7 @@ func NewService(jobStore JobStore, workerStore WorkerStore) (*Service, error) {
 	return &Service{
 		jobStore:    jobStore,
 		workerStore: workerStore,
+		assignments: make(map[string]string),
 	}, nil
 }
 
@@ -77,6 +81,9 @@ func (s *Service) RegisterWorker(id string, capacity worker.Capacity) (*worker.W
 }
 
 func (s *Service) ScheduleJob(jobID string) (*worker.Worker, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	j, getErr := s.jobStore.Get(jobID)
 
 	if getErr != nil {
@@ -95,5 +102,58 @@ func (s *Service) ScheduleJob(jobID string) (*worker.Worker, error) {
 		return nil, aErr
 	}
 
+	s.assignments[jobID] = assignedWorker.ID()
+
 	return assignedWorker, nil
+}
+
+func (s *Service) AssignedWorker(jobID string) (*worker.Worker, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, ok := s.assignments[jobID]; !ok {
+		return nil, ErrAssignmentNotFound
+	}
+
+	workerID := s.assignments[jobID]
+
+	w, err := s.workerStore.Get(workerID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return w, nil
+}
+
+func (s *Service) FinishJob(jobID string, finalStatus job.Status) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	candidate, err := s.jobStore.Get(jobID)
+	if err != nil {
+		return err
+	}
+
+	workerID, ok := s.assignments[jobID]
+	if !ok {
+		return ErrAssignmentNotFound
+	}
+
+	assignedWorker, err := s.workerStore.Get(workerID)
+	if err != nil {
+		return err
+	}
+
+	if err := scheduler.Finish(
+		assignedWorker,
+		candidate,
+		finalStatus,
+	); err != nil {
+		return err
+	}
+
+	delete(s.assignments, jobID)
+
+	return nil
 }
