@@ -6,19 +6,40 @@ import (
 	"os"
 )
 
-func run(args []string, stdout, stderr io.Writer) int {
+type serverRunner func(io.Writer) error
+
+func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	return runWithServer(
+		args,
+		stdout,
+		stderr,
+		serveHTTP,
+	)
+}
+
+func runWithServer(args []string, stdout io.Writer, stderr io.Writer, serve serverRunner) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: orchard <command>")
 		return 2
 	}
 
-	if args[0] == "version" {
+	switch args[0] {
+	case "version":
 		fmt.Fprintln(stdout, "orchard dev")
 		return 0
-	}
 
-	fmt.Fprintln(stderr, "unknown command:", args[0])
-	return 2
+	case "server":
+		if err := serve(stdout); err != nil {
+			fmt.Fprintln(stderr, "server error:", err)
+			return 1
+		}
+
+		return 0
+
+	default:
+		fmt.Fprintln(stderr, "unknown command:", args[0])
+		return 2
+	}
 }
 
 func main() {
