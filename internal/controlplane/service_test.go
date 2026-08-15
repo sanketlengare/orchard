@@ -451,3 +451,45 @@ func TestInvalidJobFinish(t *testing.T) {
 		)
 	}
 }
+
+func TestGetJob(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	_, err = service.SubmitJob(
+		"job1",
+		[]string{"echo", "hello"},
+		job.ResourceRequest{
+			CPUCores:  2,
+			MemoryMiB: 2048,
+		},
+	)
+	if err != nil {
+		t.Fatalf("SubmitJob() error = %v", err)
+	}
+
+	_, err = service.GetJob("job2")
+
+	if !errors.Is(err, store.ErrJobNotFound) {
+		t.Fatalf(
+			"GetJob() error = %v, want %v",
+			err,
+			store.ErrJobNotFound,
+		)
+	}
+
+	j, err := service.GetJob("job1")
+
+	if err != nil {
+		t.Fatalf("GetJob() returns error - %v", err)
+	}
+
+	if j.ID() != "job1" {
+		t.Fatalf("Job stored should have ID %v but got %v", "job1", j.ID())
+	}
+}

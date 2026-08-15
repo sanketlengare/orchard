@@ -157,3 +157,7 @@ func (s *Service) FinishJob(jobID string, finalStatus job.Status) error {
 
 	return nil
 }
+
+func (s *Service) GetJob(id string) (*job.Job, error) {
+	return s.jobStore.Get(id)
+}
