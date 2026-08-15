@@ -9,29 +9,25 @@ import (
 	"github.com/sanketlengare/orchard/internal/store"
 )
 
-type JobSubmitter interface {
-	SubmitJob(
-		id string,
-		command []string,
-		resources job.ResourceRequest,
-	) (*job.Job, error)
+type JobService interface {
+	SubmitJob(id string, command []string, resources job.ResourceRequest) (*job.Job, error)
+
+	GetJob(id string) (*job.Job, error)
 }
 
 type Handler struct {
-	service JobSubmitter
+	service JobService
 	mux     *http.ServeMux
 }
 
-func NewHandler(service JobSubmitter) *Handler {
+func NewHandler(service JobService) *Handler {
 	handler := &Handler{
 		service: service,
 		mux:     http.NewServeMux(),
 	}
 
-	handler.mux.HandleFunc(
-		"POST /v1/jobs",
-		handler.submitJob,
-	)
+	handler.mux.HandleFunc("POST /v1/jobs", handler.submitJob)
+	handler.mux.HandleFunc("GET /v1/jobs/{id}", handler.getJob)
 
 	return handler
 }
@@ -70,10 +66,41 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func (h *Handler) submitJob(
-	w http.ResponseWriter,
-	r *http.Request,
-) {
+func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	job, err := h.service.GetJob(id)
+
+	if err != nil {
+		status := getJobErrorStatus(err)
+		message := err.Error()
+
+		if status == http.StatusInternalServerError {
+			message = "internal server error"
+		}
+
+		writeJSON(
+			w,
+			status,
+			errorResponse{
+				Error: message,
+			},
+		)
+		return
+	}
+
+	response := mapJobToResponse(job)
+
+	writeJSON(
+		w,
+		http.StatusOK,
+		response,
+	)
+
+}
+
+func (h *Handler) submitJob(w http.ResponseWriter, r *http.Request) {
+
 	var request submitJobRequest
 
 	decoder := json.NewDecoder(r.Body)
@@ -116,6 +143,16 @@ func (h *Handler) submitJob(
 		return
 	}
 
+	response := mapJobToResponse(created)
+
+	writeJSON(
+		w,
+		http.StatusCreated,
+		response,
+	)
+}
+
+func mapJobToResponse(created *job.Job) jobResponse {
 	resources := created.Resources()
 
 	response := jobResponse{
@@ -128,11 +165,17 @@ func (h *Handler) submitJob(
 		Status: string(created.Status()),
 	}
 
-	writeJSON(
-		w,
-		http.StatusCreated,
-		response,
-	)
+	return response
+}
+
+func getJobErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, store.ErrJobNotFound):
+		return http.StatusNotFound
+
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func submitJobErrorStatus(err error) int {

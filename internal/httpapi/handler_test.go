@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sanketlengare/orchard/internal/controlplane"
+	"github.com/sanketlengare/orchard/internal/job"
 	"github.com/sanketlengare/orchard/internal/store"
 )
 
@@ -325,5 +326,104 @@ func TestSubmitJobDuplicate(t *testing.T) {
 			"stored jobs = %d, want 1",
 			len(jobs),
 		)
+	}
+}
+
+func TestGetJob(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(
+		jobStore,
+		workerStore,
+	)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	firstRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs/job1",
+		strings.NewReader(""),
+	)
+
+	firstRecorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(
+		firstRecorder,
+		firstRequest,
+	)
+
+	firstResponse := firstRecorder.Result()
+	defer firstResponse.Body.Close()
+
+	if firstResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf(
+			"first status = %d, want %d",
+			firstResponse.StatusCode,
+			http.StatusNotFound,
+		)
+	}
+
+	var errorBody errorResponse
+
+	if err := json.NewDecoder(firstResponse.Body).Decode(&errorBody); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if errorBody.Error != store.ErrJobNotFound.Error() {
+		t.Fatalf(
+			"error = %q, want %q",
+			errorBody.Error,
+			store.ErrJobNotFound.Error(),
+		)
+	}
+
+	// submit a job directly to jobstore
+
+	_, err = service.SubmitJob("job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 4, MemoryMiB: 4096})
+
+	if err != nil {
+		t.Fatalf("SubmitJob() returns error - %v", err)
+	}
+
+	secondRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs/job1",
+		strings.NewReader(""),
+	)
+
+	secondRecorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(
+		secondRecorder,
+		secondRequest,
+	)
+
+	secondResponse := secondRecorder.Result()
+	defer secondResponse.Body.Close()
+
+	if secondResponse.StatusCode != http.StatusOK {
+		t.Fatalf(
+			"second status = %d, want %d",
+			secondResponse.StatusCode,
+			http.StatusOK,
+		)
+	}
+
+	var body jobResponse
+
+	if err := json.NewDecoder(secondResponse.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if body.ID != "job1" {
+		t.Fatalf("ID = %q, want %q", body.ID, "job1")
+	}
+
+	if body.Status != "pending" {
+		t.Fatalf("status = %q, want %q", body.Status, "pending")
 	}
 }
