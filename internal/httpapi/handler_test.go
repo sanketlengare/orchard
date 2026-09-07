@@ -10,6 +10,7 @@ import (
 	"github.com/sanketlengare/orchard/internal/controlplane"
 	"github.com/sanketlengare/orchard/internal/job"
 	"github.com/sanketlengare/orchard/internal/store"
+	"github.com/sanketlengare/orchard/internal/worker"
 )
 
 func TestSubmitJobSuccess(t *testing.T) {
@@ -791,5 +792,217 @@ func TestRegisterWorkerInvalidCapacity(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestScheduleJobSuccess(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	worker, errRegisterWorker := service.RegisterWorker("worker1", worker.Capacity{CPUCores: 2, MemoryMiB: 1024})
+
+	if errRegisterWorker != nil {
+		t.Fatalf("RegisterWorker() returns error - %v", errRegisterWorker)
+	}
+
+	candidateJob, errSubmitJob := service.SubmitJob("job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 1024})
+
+	if errSubmitJob != nil {
+		t.Fatalf("SubmitJob() returns error - %v", errSubmitJob)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/jobs/job1/schedule",
+		strings.NewReader(""),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusOK,
+		)
+	}
+
+	var body scheduleJobResponse
+
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if body.JobID != candidateJob.ID() {
+		t.Fatalf("ID = %q, want %q", body.JobID, candidateJob.ID())
+	}
+
+	if body.WorkerID != worker.ID() {
+		t.Fatalf("status = %q, want %q", body.WorkerID, worker.ID())
+	}
+
+	if candidateJob.Status() != job.StatusRunning {
+		t.Fatalf(
+			"job status = %v, want %v",
+			candidateJob.Status(),
+			job.StatusRunning,
+		)
+	}
+
+}
+
+func TestScheduleJobNotFound(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/jobs/job1/schedule",
+		strings.NewReader(""),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusNotFound,
+		)
+	}
+}
+
+func TestScheduleJobNoSuitableWorker(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	_, errRegisterWorker := service.RegisterWorker("worker1", worker.Capacity{CPUCores: 2, MemoryMiB: 1024})
+
+	if errRegisterWorker != nil {
+		t.Fatalf("RegisterWorker() returns error - %v", errRegisterWorker)
+	}
+
+	_, errSubmitJob := service.SubmitJob("job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 4, MemoryMiB: 2048})
+
+	if errSubmitJob != nil {
+		t.Fatalf("SubmitJob() returns error - %v", errSubmitJob)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/jobs/job1/schedule",
+		strings.NewReader(""),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusConflict,
+		)
+	}
+}
+
+func TestScheduleJobNotPending(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	_, errRegisterWorker := service.RegisterWorker("worker1", worker.Capacity{CPUCores: 4, MemoryMiB: 2048})
+
+	if errRegisterWorker != nil {
+		t.Fatalf("RegisterWorker() returns error - %v", errRegisterWorker)
+	}
+
+	_, errSubmitJob := service.SubmitJob("job1", []string{"echo", "hello"}, job.ResourceRequest{CPUCores: 2, MemoryMiB: 1024})
+
+	if errSubmitJob != nil {
+		t.Fatalf("SubmitJob() returns error - %v", errSubmitJob)
+	}
+
+	request1 := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/jobs/job1/schedule",
+		strings.NewReader(""),
+	)
+
+	recorder1 := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder1, request1)
+
+	if recorder1.Code != http.StatusOK {
+		t.Fatalf(
+			"first status = %d, want %d; body = %s",
+			recorder1.Code,
+			http.StatusOK,
+			recorder1.Body.String(),
+		)
+	}
+
+	// send request to schedule same job again
+
+	request2 := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/jobs/job1/schedule",
+		strings.NewReader(""),
+	)
+
+	recorder2 := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder2, request2)
+
+	response := recorder2.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusConflict,
+		)
 	}
 }

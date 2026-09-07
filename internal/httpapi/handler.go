@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/sanketlengare/orchard/internal/job"
+	"github.com/sanketlengare/orchard/internal/scheduler"
 	"github.com/sanketlengare/orchard/internal/store"
 	"github.com/sanketlengare/orchard/internal/worker"
 )
@@ -14,6 +15,7 @@ type ControlPlaneService interface {
 	SubmitJob(id string, command []string, resources job.ResourceRequest) (*job.Job, error)
 	GetJob(id string) (*job.Job, error)
 	RegisterWorker(id string, capacity worker.Capacity) (*worker.Worker, error)
+	ScheduleJob(jobID string) (*worker.Worker, error)
 }
 
 type Handler struct {
@@ -30,6 +32,7 @@ func NewHandler(service ControlPlaneService) *Handler {
 	handler.mux.HandleFunc("POST /v1/jobs", handler.submitJob)
 	handler.mux.HandleFunc("GET /v1/jobs/{id}", handler.getJob)
 	handler.mux.HandleFunc("POST /v1/workers", handler.registerWorker)
+	handler.mux.HandleFunc("POST /v1/jobs/{id}/schedule", handler.scheduleJob)
 
 	return handler
 }
@@ -50,6 +53,11 @@ type submitJobRequest struct {
 type resourceRequest struct {
 	CPUCores  int `json:"cpu_cores"`
 	MemoryMiB int `json:"memory_mib"`
+}
+
+type scheduleJobResponse struct {
+	JobID    string `json:"job_id"`
+	WorkerID string `json:"worker_id"`
 }
 
 type jobResponse struct {
@@ -221,6 +229,41 @@ func (h *Handler) submitJob(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (h *Handler) scheduleJob(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	worker, err := h.service.ScheduleJob(id)
+
+	if err != nil {
+		status := getScheduleJobErrorStatus(err)
+		message := err.Error()
+
+		if status == http.StatusInternalServerError {
+			message = "internal server error"
+		}
+
+		writeJSON(
+			w,
+			status,
+			errorResponse{
+				Error: message,
+			},
+		)
+		return
+	}
+
+	response := scheduleJobResponse{
+		JobID:    id,
+		WorkerID: worker.ID(),
+	}
+
+	writeJSON(
+		w,
+		http.StatusOK,
+		response,
+	)
+}
+
 func mapWorkerToResponse(created *worker.Worker) workerResponse {
 	totalCapacity := created.TotalCapacity()
 	availableCapcity := created.AvailableCapacity()
@@ -291,6 +334,20 @@ func registerWorkerErrorStatus(err error) int {
 		errors.Is(err, worker.ErrCPUCoresRequired),
 		errors.Is(err, worker.ErrMemoryMiBRequired):
 		return http.StatusBadRequest
+
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func getScheduleJobErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, store.ErrJobNotFound):
+		return http.StatusNotFound
+
+	case errors.Is(err, scheduler.ErrNoSuitableWorker),
+		errors.Is(err, scheduler.ErrJobNotPending):
+		return http.StatusConflict
 
 	default:
 		return http.StatusInternalServerError
