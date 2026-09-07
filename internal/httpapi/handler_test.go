@@ -216,7 +216,7 @@ func TestSubmitWrongHTTP(t *testing.T) {
 		http.MethodGet,
 		"/v1/jobs",
 		strings.NewReader(`{
-		"id": " ",
+		"id": "job1",
 		"command": ["echo", "hello"],
 		"resources": {
 			"cpu_cores": 2,
@@ -425,5 +425,371 @@ func TestGetJob(t *testing.T) {
 
 	if body.Status != "pending" {
 		t.Fatalf("status = %q, want %q", body.Status, "pending")
+	}
+}
+
+// Register worker tests
+
+func TestRegisterWorkerSuccess(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+
+	if err != nil {
+		t.Fatalf("NewService() returns error - %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/workers",
+		strings.NewReader(`{
+			"id": "worker1",
+			"capacity": {
+				"cpu_cores": 2,
+				"memory_mib": 1024
+			}
+		}`),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusCreated,
+		)
+	}
+
+	if contentType := response.Header.Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf(
+			"Content-Type = %q, want %q",
+			contentType,
+			"application/json",
+		)
+	}
+
+	var body workerResponse
+
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if body.ID != "worker1" {
+		t.Fatalf("response ID = %q, want %q", body.ID, "worker1")
+	}
+
+	if body.AvailableCapacity.CPUCores != 2 {
+		t.Fatalf(
+			"response CPU cores = %d, want 2",
+			body.AvailableCapacity.CPUCores,
+		)
+	}
+
+	if body.AvailableCapacity.MemoryMiB != 1024 {
+		t.Fatalf(
+			"response memory MiB = %d, want 1024",
+			body.AvailableCapacity.MemoryMiB,
+		)
+	}
+
+	if body.TotalCapacity.CPUCores != 2 ||
+		body.TotalCapacity.MemoryMiB != 1024 {
+		t.Fatalf(
+			"total capacity = %v, want {2 1024}",
+			body.TotalCapacity,
+		)
+	}
+
+}
+
+func TestRegisterWorkerMalformed(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+
+	if err != nil {
+		t.Fatalf("NewService() returns error - %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/workers",
+		strings.NewReader(`{"id": "worker1"`),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusBadRequest,
+		)
+	}
+
+	if contentType := response.Header.Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf(
+			"Content-Type = %q, want %q",
+			contentType,
+			"application/json",
+		)
+	}
+
+	var body errorResponse
+
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("Decode() error = %v", err)
+	}
+
+	if body.Error != "invalid request body" {
+		t.Fatalf(
+			"error = %q, want %q",
+			body.Error,
+			"invalid request body",
+		)
+	}
+}
+
+func TestRegisterWorkerInvalidWorker(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+
+	if err != nil {
+		t.Fatalf("NewService() returns error - %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/workers",
+		strings.NewReader(`{
+		"id": " ",
+		"capacity": {
+			"cpu_cores": 2,
+			"memory_mib": 1024
+		}
+	}`),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusBadRequest,
+		)
+	}
+}
+
+func TestRegisterWrongHTTP(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(jobStore, workerStore)
+
+	if err != nil {
+		t.Fatalf("NewService() returns error - %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/workers",
+		strings.NewReader(`{
+		"id": "worker1",
+		"capacity": {
+			"cpu_cores": 2,
+			"memory_mib": 1024
+		}
+	}`),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	response := recorder.Result()
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf(
+			"status = %d, want %d",
+			response.StatusCode,
+			http.StatusMethodNotAllowed,
+		)
+	}
+}
+
+func TestRegisterWorkerDuplicate(t *testing.T) {
+	jobStore := store.NewMemoryJobStore()
+	workerStore := store.NewMemoryWorkerStore()
+
+	service, err := controlplane.NewService(
+		jobStore,
+		workerStore,
+	)
+	if err != nil {
+		t.Fatalf("NewService() error = %v", err)
+	}
+
+	handler := NewHandler(service)
+
+	const requestBody = `{
+		"id": "worker1",
+		"capacity": {
+			"cpu_cores": 2,
+			"memory_mib": 1024
+		}
+	}`
+
+	// First request creates the job.
+
+	firstRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/workers",
+		strings.NewReader(requestBody),
+	)
+
+	firstRecorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(
+		firstRecorder,
+		firstRequest,
+	)
+
+	firstResponse := firstRecorder.Result()
+	defer firstResponse.Body.Close()
+
+	if firstResponse.StatusCode != http.StatusCreated {
+		t.Fatalf(
+			"first status = %d, want %d",
+			firstResponse.StatusCode,
+			http.StatusCreated,
+		)
+	}
+
+	// Second request uses the same ID and same store.
+
+	secondRequest := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/workers",
+		strings.NewReader(requestBody),
+	)
+
+	secondRecorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(
+		secondRecorder,
+		secondRequest,
+	)
+
+	secondResponse := secondRecorder.Result()
+	defer secondResponse.Body.Close()
+
+	if secondResponse.StatusCode != http.StatusConflict {
+		t.Fatalf(
+			"second status = %d, want %d",
+			secondResponse.StatusCode,
+			http.StatusConflict,
+		)
+	}
+
+	workers, err := workerStore.List()
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+
+	if len(workers) != 1 {
+		t.Fatalf(
+			"stored jobs = %d, want 1",
+			len(workers),
+		)
+	}
+}
+
+func TestRegisterWorkerInvalidCapacity(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "zero CPU",
+			body: `{
+				"id": "worker1",
+				"capacity": {
+					"cpu_cores": 0,
+					"memory_mib": 1024
+				}
+			}`,
+		},
+		{
+			name: "zero memory",
+			body: `{
+				"id": "worker1",
+				"capacity": {
+					"cpu_cores": 2,
+					"memory_mib": 0
+				}
+			}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jobStore := store.NewMemoryJobStore()
+			workerStore := store.NewMemoryWorkerStore()
+
+			service, err := controlplane.NewService(jobStore, workerStore)
+			if err != nil {
+				t.Fatalf("NewService() error = %v", err)
+			}
+
+			handler := NewHandler(service)
+
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/v1/workers",
+				strings.NewReader(tt.body),
+			)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf(
+					"status = %d, want %d; body = %s",
+					recorder.Code,
+					http.StatusBadRequest,
+					recorder.Body.String(),
+				)
+			}
+		})
 	}
 }

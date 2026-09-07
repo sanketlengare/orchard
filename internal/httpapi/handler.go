@@ -7,20 +7,21 @@ import (
 
 	"github.com/sanketlengare/orchard/internal/job"
 	"github.com/sanketlengare/orchard/internal/store"
+	"github.com/sanketlengare/orchard/internal/worker"
 )
 
-type JobService interface {
+type ControlPlaneService interface {
 	SubmitJob(id string, command []string, resources job.ResourceRequest) (*job.Job, error)
-
 	GetJob(id string) (*job.Job, error)
+	RegisterWorker(id string, capacity worker.Capacity) (*worker.Worker, error)
 }
 
 type Handler struct {
-	service JobService
+	service ControlPlaneService
 	mux     *http.ServeMux
 }
 
-func NewHandler(service JobService) *Handler {
+func NewHandler(service ControlPlaneService) *Handler {
 	handler := &Handler{
 		service: service,
 		mux:     http.NewServeMux(),
@@ -28,6 +29,7 @@ func NewHandler(service JobService) *Handler {
 
 	handler.mux.HandleFunc("POST /v1/jobs", handler.submitJob)
 	handler.mux.HandleFunc("GET /v1/jobs/{id}", handler.getJob)
+	handler.mux.HandleFunc("POST /v1/workers", handler.registerWorker)
 
 	return handler
 }
@@ -58,6 +60,27 @@ type jobResponse struct {
 }
 
 type resourceResponse struct {
+	CPUCores  int `json:"cpu_cores"`
+	MemoryMiB int `json:"memory_mib"`
+}
+
+type registerWorkerRequest struct {
+	ID       string          `json:"id"`
+	Capacity capacityRequest `json:"capacity"`
+}
+
+type capacityRequest struct {
+	CPUCores  int `json:"cpu_cores"`
+	MemoryMiB int `json:"memory_mib"`
+}
+
+type workerResponse struct {
+	ID                string           `json:"id"`
+	TotalCapacity     capacityResponse `json:"total_capacity"`
+	AvailableCapacity capacityResponse `json:"available_capacity"`
+}
+
+type capacityResponse struct {
 	CPUCores  int `json:"cpu_cores"`
 	MemoryMiB int `json:"memory_mib"`
 }
@@ -97,6 +120,52 @@ func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
 		response,
 	)
 
+}
+
+func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
+	var request registerWorkerRequest
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(
+			w,
+			http.StatusBadRequest,
+			errorResponse{
+				Error: "invalid request body",
+			},
+		)
+		return
+	}
+
+	created, err := h.service.RegisterWorker(request.ID, worker.Capacity(request.Capacity))
+
+	if err != nil {
+		status := registerWorkerErrorStatus(err)
+		message := err.Error()
+
+		if status == http.StatusInternalServerError {
+			message = "internal server error"
+		}
+
+		writeJSON(
+			w,
+			status,
+			errorResponse{
+				Error: message,
+			},
+		)
+		return
+	}
+
+	response := mapWorkerToResponse(created)
+
+	writeJSON(
+		w,
+		http.StatusCreated,
+		response,
+	)
 }
 
 func (h *Handler) submitJob(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +221,25 @@ func (h *Handler) submitJob(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func mapWorkerToResponse(created *worker.Worker) workerResponse {
+	totalCapacity := created.TotalCapacity()
+	availableCapcity := created.AvailableCapacity()
+
+	response := workerResponse{
+		ID: created.ID(),
+		TotalCapacity: capacityResponse{
+			CPUCores:  totalCapacity.CPUCores,
+			MemoryMiB: totalCapacity.MemoryMiB,
+		},
+		AvailableCapacity: capacityResponse{
+			CPUCores:  availableCapcity.CPUCores,
+			MemoryMiB: availableCapcity.MemoryMiB,
+		},
+	}
+
+	return response
+}
+
 func mapJobToResponse(created *job.Job) jobResponse {
 	resources := created.Resources()
 
@@ -188,6 +276,21 @@ func submitJobErrorStatus(err error) int {
 
 	case errors.Is(err, store.ErrJobAlreadyExists):
 		return http.StatusConflict
+
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func registerWorkerErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, store.ErrWorkerAlreadyExists):
+		return http.StatusConflict
+
+	case errors.Is(err, worker.ErrIDRequired),
+		errors.Is(err, worker.ErrCPUCoresRequired),
+		errors.Is(err, worker.ErrMemoryMiBRequired):
+		return http.StatusBadRequest
 
 	default:
 		return http.StatusInternalServerError
