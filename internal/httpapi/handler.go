@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/sanketlengare/orchard/internal/controlplane"
 	"github.com/sanketlengare/orchard/internal/job"
 	"github.com/sanketlengare/orchard/internal/scheduler"
 	"github.com/sanketlengare/orchard/internal/store"
@@ -16,6 +17,7 @@ type ControlPlaneService interface {
 	GetJob(id string) (*job.Job, error)
 	RegisterWorker(id string, capacity worker.Capacity) (*worker.Worker, error)
 	ScheduleJob(jobID string) (*worker.Worker, error)
+	FinishJob(jobID string, finalStatus job.Status) error
 }
 
 type Handler struct {
@@ -33,6 +35,7 @@ func NewHandler(service ControlPlaneService) *Handler {
 	handler.mux.HandleFunc("GET /v1/jobs/{id}", handler.getJob)
 	handler.mux.HandleFunc("POST /v1/workers", handler.registerWorker)
 	handler.mux.HandleFunc("POST /v1/jobs/{id}/schedule", handler.scheduleJob)
+	handler.mux.HandleFunc("POST /v1/jobs/{id}/finish", handler.finishJob)
 
 	return handler
 }
@@ -42,6 +45,10 @@ func (h *Handler) ServeHTTP(
 	r *http.Request,
 ) {
 	h.mux.ServeHTTP(w, r)
+}
+
+type finishJobRequest struct {
+	Status string `json:"status"`
 }
 
 type submitJobRequest struct {
@@ -150,7 +157,7 @@ func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
 	created, err := h.service.RegisterWorker(request.ID, worker.Capacity(request.Capacity))
 
 	if err != nil {
-		status := registerWorkerErrorStatus(err)
+		status := getRegisterWorkerErrorStatus(err)
 		message := err.Error()
 
 		if status == http.StatusInternalServerError {
@@ -264,6 +271,49 @@ func (h *Handler) scheduleJob(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (h *Handler) finishJob(w http.ResponseWriter, r *http.Request) {
+	var request finishJobRequest
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		writeJSON(
+			w,
+			http.StatusBadRequest,
+			errorResponse{
+				Error: "invalid request body",
+			},
+		)
+		return
+	}
+
+	id := r.PathValue("id")
+
+	err := h.service.FinishJob(id, job.Status(request.Status))
+
+	if err != nil {
+		status := getFinishJobErrorStatus(err)
+		message := err.Error()
+
+		if status == http.StatusInternalServerError {
+			message = "internal server error"
+		}
+
+		writeJSON(
+			w,
+			status,
+			errorResponse{
+				Error: message,
+			},
+		)
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func mapWorkerToResponse(created *worker.Worker) workerResponse {
 	totalCapacity := created.TotalCapacity()
 	availableCapcity := created.AvailableCapacity()
@@ -325,7 +375,7 @@ func submitJobErrorStatus(err error) int {
 	}
 }
 
-func registerWorkerErrorStatus(err error) int {
+func getRegisterWorkerErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, store.ErrWorkerAlreadyExists):
 		return http.StatusConflict
@@ -347,6 +397,23 @@ func getScheduleJobErrorStatus(err error) int {
 
 	case errors.Is(err, scheduler.ErrNoSuitableWorker),
 		errors.Is(err, scheduler.ErrJobNotPending):
+		return http.StatusConflict
+
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func getFinishJobErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, scheduler.ErrInvalidFinalStatus):
+		return http.StatusBadRequest
+
+	case errors.Is(err, store.ErrJobNotFound):
+		return http.StatusNotFound
+
+	case errors.Is(err, controlplane.ErrAssignmentNotFound),
+		errors.Is(err, scheduler.ErrJobNotRunning):
 		return http.StatusConflict
 
 	default:
