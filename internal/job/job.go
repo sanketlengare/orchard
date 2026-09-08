@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 )
 
 var ErrIDRequired = errors.New("job: id is required")
@@ -22,6 +23,7 @@ type Job struct {
 	command   []string
 	resources ResourceRequest
 	status    Status
+	mu        sync.RWMutex
 }
 
 func New(id string, command []string, resources ResourceRequest) (*Job, error) {
@@ -63,10 +65,16 @@ func (j *Job) Resources() ResourceRequest {
 }
 
 func (j *Job) Status() Status {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+
 	return j.status
 }
 
 func (j *Job) TransitionTo(next Status) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
 	if !j.status.CanTransitionTo(next) {
 		return ErrInvalidTransition
 	}

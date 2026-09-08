@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -330,4 +331,46 @@ func TestResourceRequestReturnsCopy(t *testing.T) {
 	if got := j.Resources(); got != want {
 		t.Errorf("Resources() = %v, want %v", got, want)
 	}
+}
+
+func TestConcurrency(t *testing.T) {
+	j, err := New("job1", []string{"echo", "hello"}, validResourceRequest())
+
+	if err != nil {
+		t.Fatalf("New() error = %v, wantErr %v", err, nil)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < 20; i++ {
+			j.Status()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		err := j.TransitionTo(StatusRunning)
+
+		if err != nil {
+			t.Errorf("TransitionTo() returns error - %v", err)
+		}
+
+		err = j.TransitionTo(StatusSucceeded)
+
+		if err != nil {
+			t.Errorf("TransitionTo() returns error - %v", err)
+		}
+	}()
+
+	wg.Wait()
+
+	if j.Status() != StatusSucceeded {
+		t.Fatalf("Want status - %v, got - %v", StatusSucceeded, j.Status())
+	}
+
 }
