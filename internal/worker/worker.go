@@ -3,6 +3,7 @@ package worker
 import (
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/sanketlengare/orchard/internal/job"
 )
@@ -23,6 +24,7 @@ type Worker struct {
 	id        string
 	total     Capacity
 	available Capacity
+	mu        sync.RWMutex
 }
 
 func New(id string, total Capacity) (*Worker, error) {
@@ -56,19 +58,34 @@ func (w *Worker) TotalCapacity() Capacity {
 }
 
 func (w *Worker) AvailableCapacity() Capacity {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
 	return w.available
 }
 
-func (w *Worker) CanRun(request job.ResourceRequest) bool {
+// canRunLocked requires the caller to hold w.mu.
+func (w *Worker) canRunLocked(request job.ResourceRequest) bool {
+
 	return request.CPUCores > 0 && request.MemoryMiB > 0 && request.CPUCores <= w.available.CPUCores && request.MemoryMiB <= w.available.MemoryMiB
 }
 
+func (w *Worker) CanRun(request job.ResourceRequest) bool {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	return w.canRunLocked(request)
+}
+
 func (w *Worker) Reserve(request job.ResourceRequest) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if !validRequest(request) {
 		return ErrInvalidResourceRequest
 	}
 
-	if !w.CanRun(request) {
+	if !w.canRunLocked(request) {
 		return ErrInsufficientCapacity
 	}
 
@@ -79,6 +96,9 @@ func (w *Worker) Reserve(request job.ResourceRequest) error {
 }
 
 func (w *Worker) Release(request job.ResourceRequest) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if !validRequest(request) {
 		return ErrInvalidResourceRequest
 	}

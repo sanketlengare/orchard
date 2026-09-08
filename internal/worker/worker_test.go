@@ -3,6 +3,7 @@ package worker
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sanketlengare/orchard/internal/job"
@@ -192,6 +193,10 @@ func TestWorkerCapacityReturnsCopy(t *testing.T) {
 	total.MemoryMiB = 0
 	available.CPUCores = 0
 	available.MemoryMiB = 0
+
+	if total != (Capacity{}) || available != (Capacity{}) {
+		t.Fatalf("mutated copies = total %v, available %v, want zero values", total, available)
+	}
 
 	// Check if the original values in the worker remain unchanged
 	if got := w.TotalCapacity(); got.CPUCores != 4 || got.MemoryMiB != 8192 {
@@ -512,5 +517,106 @@ func TestWorkerReserveSequentially(t *testing.T) {
 	if got := w.AvailableCapacity(); got != before {
 		t.Errorf("AvailableCapacity() = %v, want unchanged %v",
 			got, before)
+	}
+}
+
+func TestConcurrencyWrite(t *testing.T) {
+	w, err := New("worker1", Capacity{CPUCores: 2, MemoryMiB: 1024})
+
+	if err != nil {
+		t.Fatalf("New() returns error - %v", err)
+	}
+
+	results := make([]error, 2)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		results[0] = w.Reserve(job.ResourceRequest{CPUCores: 2, MemoryMiB: 1024})
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		results[1] = w.Reserve(job.ResourceRequest{CPUCores: 2, MemoryMiB: 1024})
+	}()
+
+	wg.Wait()
+
+	successes := 0
+	for _, err := range results {
+		if err == nil {
+			successes++
+		}
+	}
+
+	if successes != 1 {
+		t.Fatalf("successful reservations = %d, want 1; results = %v", successes, results)
+	}
+
+	if (results[0] == nil) && (results[1] == nil) {
+		t.Fatalf("expected exactly one successful reservation: %v", results)
+	}
+
+	if results[0] != nil && results[0] != ErrInsufficientCapacity {
+		t.Fatalf("unexpected first result: %v", results[0])
+	}
+
+	if results[1] != nil && results[1] != ErrInsufficientCapacity {
+		t.Fatalf("unexpected second result: %v", results[1])
+	}
+
+	if w.AvailableCapacity().CPUCores != 0 || w.AvailableCapacity().MemoryMiB != 0 {
+		t.Fatalf("Reserve() failed")
+	}
+}
+
+func TestConcurrencyReadWrite(t *testing.T) {
+	w, err := New("worker1", Capacity{CPUCores: 2, MemoryMiB: 1024})
+
+	if err != nil {
+		t.Fatalf("New() returns error - %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < 20; i++ {
+			err := w.Reserve(job.ResourceRequest{CPUCores: 2, MemoryMiB: 1024})
+
+			if err != nil {
+				t.Errorf("Reserve() returns error - %v", err)
+			}
+
+			err = w.Release(job.ResourceRequest{CPUCores: 2, MemoryMiB: 1024})
+
+			if err != nil {
+				t.Errorf("Release() returns error - %v", err)
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < 20; i++ {
+			_ = w.AvailableCapacity()
+			_ = w.CanRun(job.ResourceRequest{
+				CPUCores:  2,
+				MemoryMiB: 1024,
+			})
+		}
+	}()
+
+	wg.Wait()
+
+	if w.AvailableCapacity().CPUCores != 2 || w.AvailableCapacity().MemoryMiB != 1024 {
+		t.Fatalf("Restoring capacity fails")
 	}
 }
