@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -126,5 +127,73 @@ func TestGetJobInvalidJSON(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("GetJob() returned nil error for malformed JSON")
+	}
+}
+
+func TestFinishJobSuccess(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		wantStatus int
+		wantErr    string
+	}{
+		{name: "succeeded", status: "succeeded", wantStatus: http.StatusNoContent},
+		{name: "failed", status: "failed", wantStatus: http.StatusNoContent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+
+				if r.URL.Path != "/v1/jobs/job1/finish" {
+					t.Errorf("path = %s, want /v1/jobs/job1/finish", r.URL.Path)
+				}
+
+				if got := r.Header.Get("Content-Type"); got != "application/json" {
+					t.Errorf("content type = %s, want application/json", got)
+				}
+
+				var body JobFinishStatus
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+					http.Error(w, "invalid JSON", http.StatusBadRequest)
+					return
+				}
+
+				if body.Status != tt.status {
+					t.Errorf("status = %q, want %q", body.Status, tt.status)
+				}
+
+				w.WriteHeader(tt.wantStatus)
+			}))
+			defer server.Close()
+
+			err := New(server.URL).FinishJob(t.Context(), "job1", tt.status)
+			if err != nil {
+				t.Fatalf("FinishJob() returned error: %v", err)
+			}
+		})
+	}
+}
+
+func TestFinishJobHTTPFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	err := client.FinishJob(t.Context(), "job1", "failed")
+
+	if err == nil {
+		t.Fatal("FinishJob() returned nil error, want HTTP failure")
+	}
+
+	if !strings.Contains(err.Error(), "409") {
+		t.Errorf("error = %q, want it to contain 409", err.Error())
 	}
 }

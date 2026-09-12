@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,10 @@ type Job struct {
 type Resources struct {
 	CPUCores  int `json:"cpu_cores"`
 	MemoryMiB int `json:"memory_mib"`
+}
+
+type JobFinishStatus struct {
+	Status string `json:"status"`
 }
 
 type Client struct {
@@ -69,4 +74,40 @@ func (c *Client) GetJob(ctx context.Context, id string) (Job, error) {
 	}
 
 	return jobResponse, nil
+}
+
+func (c *Client) FinishJob(ctx context.Context, id string, status string) error {
+	urlFinishJob := c.baseURL + "/v1/jobs/" + url.PathEscape(id) + "/finish"
+
+	finishStatus := JobFinishStatus{
+		Status: status,
+	}
+
+	body, err := json.Marshal(finishStatus)
+
+	if err != nil {
+		return fmt.Errorf("json marshal failed with error - %w", err)
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, urlFinishJob, bytes.NewReader(body))
+
+	if err != nil {
+		return err
+	}
+
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := c.httpClient.Do(request)
+
+	if err != nil {
+		return err
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("finish job failed: %d", response.StatusCode)
+	}
+
+	return nil
 }
