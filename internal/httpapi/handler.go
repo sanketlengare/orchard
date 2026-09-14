@@ -18,6 +18,7 @@ type ControlPlaneService interface {
 	RegisterWorker(id string, capacity worker.Capacity) (*worker.Worker, error)
 	ScheduleJob(jobID string) (*worker.Worker, error)
 	FinishJob(jobID string, finalStatus job.Status) error
+	AssignedWorker(jobID string) (*worker.Worker, error)
 }
 
 type Handler struct {
@@ -36,6 +37,7 @@ func NewHandler(service ControlPlaneService) *Handler {
 	handler.mux.HandleFunc("POST /v1/workers", handler.registerWorker)
 	handler.mux.HandleFunc("POST /v1/jobs/{id}/schedule", handler.scheduleJob)
 	handler.mux.HandleFunc("POST /v1/jobs/{id}/finish", handler.finishJob)
+	handler.mux.HandleFunc("GET /v1/jobs/{id}/assignment", handler.getAssignment)
 
 	return handler
 }
@@ -62,7 +64,7 @@ type resourceRequest struct {
 	MemoryMiB int `json:"memory_mib"`
 }
 
-type scheduleJobResponse struct {
+type assignmentResponse struct {
 	JobID    string `json:"job_id"`
 	WorkerID string `json:"worker_id"`
 }
@@ -259,7 +261,7 @@ func (h *Handler) scheduleJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := scheduleJobResponse{
+	response := assignmentResponse{
 		JobID:    id,
 		WorkerID: worker.ID(),
 	}
@@ -312,6 +314,42 @@ func (h *Handler) finishJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) getAssignment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	assignedWorker, err := h.service.AssignedWorker(id)
+
+	if err != nil {
+		status := getAssignmentErrorStatus(err)
+		message := err.Error()
+
+		if status == http.StatusInternalServerError {
+			message = "internal server error"
+		}
+
+		writeJSON(
+			w,
+			status,
+			errorResponse{
+				Error: message,
+			},
+		)
+
+		return
+	}
+
+	response := assignmentResponse{
+		JobID:    id,
+		WorkerID: assignedWorker.ID(),
+	}
+
+	writeJSON(
+		w,
+		http.StatusOK,
+		response,
+	)
 }
 
 func mapWorkerToResponse(created *worker.Worker) workerResponse {
@@ -415,6 +453,16 @@ func getFinishJobErrorStatus(err error) int {
 	case errors.Is(err, controlplane.ErrAssignmentNotFound),
 		errors.Is(err, scheduler.ErrJobNotRunning):
 		return http.StatusConflict
+
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func getAssignmentErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, controlplane.ErrAssignmentNotFound):
+		return http.StatusNotFound
 
 	default:
 		return http.StatusInternalServerError
