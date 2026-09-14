@@ -197,3 +197,74 @@ func TestFinishJobHTTPFailure(t *testing.T) {
 		t.Errorf("error = %q, want it to contain 409", err.Error())
 	}
 }
+
+func TestGetAssignmentSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method = %s, want GET", r.Method)
+		}
+
+		wantUrl := "/v1/jobs/job1/assignment"
+
+		if r.URL.Path != wantUrl {
+			t.Errorf("path = %s, want %s", r.URL.Path, wantUrl)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+            "job_id": "job1",
+            "worker_id": "worker1"
+        }`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	got, err := client.GetAssignment(t.Context(), "job1")
+
+	if err != nil {
+		t.Fatalf("GetAssignment() returned error: %v", err)
+	}
+
+	if got.JobID != "job1" {
+		t.Errorf("Job ID = %q, want %q", got.JobID, "job1")
+	}
+	if got.WorkerID != "worker1" {
+		t.Errorf("Worker ID = %q, want %q", got.WorkerID, "job1")
+	}
+}
+
+func TestGetAssignmentFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.GetAssignment(t.Context(), "job1")
+
+	if err == nil {
+		t.Fatal("GetAssignment() returned nil error, want HTTP failure")
+	}
+
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error = %q, want it to contain 404", err.Error())
+	}
+}
+
+func TestGetAssignmentInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+            "job": "job1",
+        }`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	_, err := client.GetAssignment(t.Context(), "job1")
+
+	if err == nil {
+		t.Fatal("GetAssignment() returned nil error for malformed JSON")
+	}
+}

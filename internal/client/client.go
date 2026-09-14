@@ -32,6 +32,11 @@ type Client struct {
 	httpClient *http.Client
 }
 
+type Assignment struct {
+	JobID    string `json:"job_id"`
+	WorkerID string `json:"worker_id"`
+}
+
 func New(baseURL string) *Client {
 
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -74,6 +79,36 @@ func (c *Client) GetJob(ctx context.Context, id string) (Job, error) {
 	}
 
 	return jobResponse, nil
+}
+
+func (c *Client) GetAssignment(ctx context.Context, id string) (Assignment, error) {
+	urlGetAssignment := c.baseURL + "/v1/jobs/" + url.PathEscape(id) + "/assignment"
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, urlGetAssignment, nil)
+
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	response, err := c.httpClient.Do(request)
+
+	if err != nil {
+		return Assignment{}, err
+	}
+
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return Assignment{}, fmt.Errorf("get assignment failed: %s", response.Status)
+	}
+
+	var assignmentResponse Assignment
+
+	if err := json.NewDecoder(response.Body).Decode(&assignmentResponse); err != nil {
+		return Assignment{}, fmt.Errorf("assignment decode failed: %w", err)
+	}
+
+	return assignmentResponse, nil
 }
 
 func (c *Client) FinishJob(ctx context.Context, id string, status string) error {
