@@ -230,7 +230,7 @@ func TestGetAssignmentSuccess(t *testing.T) {
 		t.Errorf("Job ID = %q, want %q", got.JobID, "job1")
 	}
 	if got.WorkerID != "worker1" {
-		t.Errorf("Worker ID = %q, want %q", got.WorkerID, "job1")
+		t.Errorf("Worker ID = %q, want %q", got.WorkerID, "worker1")
 	}
 }
 

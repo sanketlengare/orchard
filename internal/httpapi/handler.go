@@ -12,6 +12,8 @@ import (
 	"github.com/sanketlengare/orchard/internal/worker"
 )
 
+const internalServerErrorMessage = "internal server error"
+
 type ControlPlaneService interface {
 	SubmitJob(id string, command []string, resources job.ResourceRequest) (*job.Job, error)
 	GetJob(id string) (*job.Job, error)
@@ -116,7 +118,7 @@ func (h *Handler) getJob(w http.ResponseWriter, r *http.Request) {
 		message := err.Error()
 
 		if status == http.StatusInternalServerError {
-			message = "internal server error"
+			message = internalServerErrorMessage
 		}
 
 		writeJSON(
@@ -163,7 +165,7 @@ func (h *Handler) registerWorker(w http.ResponseWriter, r *http.Request) {
 		message := err.Error()
 
 		if status == http.StatusInternalServerError {
-			message = "internal server error"
+			message = internalServerErrorMessage
 		}
 
 		writeJSON(
@@ -216,7 +218,7 @@ func (h *Handler) submitJob(w http.ResponseWriter, r *http.Request) {
 		message := err.Error()
 
 		if status == http.StatusInternalServerError {
-			message = "internal server error"
+			message = internalServerErrorMessage
 		}
 
 		writeJSON(
@@ -248,7 +250,7 @@ func (h *Handler) scheduleJob(w http.ResponseWriter, r *http.Request) {
 		message := err.Error()
 
 		if status == http.StatusInternalServerError {
-			message = "internal server error"
+			message = internalServerErrorMessage
 		}
 
 		writeJSON(
@@ -299,7 +301,7 @@ func (h *Handler) finishJob(w http.ResponseWriter, r *http.Request) {
 		message := err.Error()
 
 		if status == http.StatusInternalServerError {
-			message = "internal server error"
+			message = internalServerErrorMessage
 		}
 
 		writeJSON(
@@ -326,7 +328,7 @@ func (h *Handler) getAssignment(w http.ResponseWriter, r *http.Request) {
 		message := err.Error()
 
 		if status == http.StatusInternalServerError {
-			message = "internal server error"
+			message = internalServerErrorMessage
 		}
 
 		writeJSON(
